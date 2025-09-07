@@ -84,6 +84,10 @@ class Stabilizer:
         # Update state value.
         self.state = self.filter.statePost
 
+    def get(self):
+        """Get the stabilized measurement."""
+        return self.state[0:self.measure_num]
+
     def set_q_r(self, cov_process=0.1, cov_measure=0.001):
         """Set new value for processNoiseCov and measurementNoiseCov."""
         if self.measure_num == 1:
@@ -117,9 +121,9 @@ def main():
     while True:
         kalman.update(mp)
         point = kalman.prediction
-        state = kalman.filter.statePost
-        cv2.circle(frame, (state[0], state[1]), 2, (255, 0, 0), -1)
-        cv2.circle(frame, (point[0], point[1]), 2, (0, 255, 0), -1)
+        state = kalman.get()
+        cv2.circle(frame, (int(state[0,0]), int(state[1,0])), 2, (255, 0, 0), -1)
+        cv2.circle(frame, (int(point[0,0]), int(point[1,0])), 2, (0, 255, 0), -1)
         cv2.imshow("kalman", frame)
         k = cv2.waitKey(30) & 0xFF
         if k == 27:

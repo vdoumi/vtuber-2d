@@ -1,6 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEditor.Recorder;
+using UnityEditor.Recorder.Input;
 
 // for Live2D model
 using Live2D.Cubism.Core;
@@ -15,13 +18,17 @@ using System.Text;
 
 public class HiyoriController : MonoBehaviour, ISaveable
 {
-
+    RecorderController recorderController;
     private CubismModel model;
+    private int take = 0;
+    private volatile bool requestStartRecording = false;
+    private volatile bool requestStopRecording = false;
 
     // threshold to activate changes in whole model's x/z parameter
     // instead of just changes in head
-    public float abs_body_roll_threshold = 30;
-    public float abs_body_yaw_threshold = 30;
+    public float abs_body_roll_threshold = 15;
+    public float abs_body_yaw_threshold = 15;
+    public float abs_body_pitch_threshold = 15;
     public float abs_body_roll_yaw_max = 60;
 
     public float ear_max_threshold = 0.38f;
@@ -37,7 +44,7 @@ public class HiyoriController : MonoBehaviour, ISaveable
 
     public bool change_mouth_form = false;
     public float mouth_dist_min = 60.0f;
-    public float mouth_dist_max = 80.0f;
+    public float mouth_dist_max = 200.0f;
 
     Thread receiveThread;
     TcpClient client;
@@ -49,6 +56,7 @@ public class HiyoriController : MonoBehaviour, ISaveable
     private float ear_left = 0, ear_right = 0;
     private float x_ratio_left = 0, y_ratio_left = 0, x_ratio_right = 0, y_ratio_right = 0;
     private float mar = 0, mouth_dist = 0;
+    private float ahoge = 0, front = 0, side = 0, back = 0, sideup = 0;
 
     private bool blush = false;
 
@@ -62,6 +70,7 @@ public class HiyoriController : MonoBehaviour, ISaveable
         abs_body_roll_yaw_max = Mathf.Abs(abs_body_roll_yaw_max);
 
         InitTCP();
+        InitVideoRecorder();
 
         // Load saved JSON data at start
         // Commented the following two lines to make it error-free when following the YT Tutorial
@@ -69,6 +78,42 @@ public class HiyoriController : MonoBehaviour, ISaveable
         // GameObject.FindWithTag("GameController").GetComponent<UISystem>().LoadData();
         // GameObject.FindWithTag("GameController").GetComponent<UISystem>().InitUI();
 
+    }
+
+    private void InitVideoRecorder() {
+        // 1. Recorder settings
+        var controllerSettings = ScriptableObject.CreateInstance<RecorderControllerSettings>();
+        recorderController = new RecorderController(controllerSettings);
+
+        // Configure a Movie Recorder
+        var movieRecorder = ScriptableObject.CreateInstance<MovieRecorderSettings>();
+        movieRecorder.name = "lecture";
+        movieRecorder.Enabled = true;
+
+        // Output path (e.g., Project folder /Recordings)
+        movieRecorder.OutputFile = "/Users/ysh/Desktop/fun/vdoumi/vtuber/Video";
+        movieRecorder.OutputFormat = MovieRecorderSettings.VideoRecorderOutputFormat.MP4;
+        movieRecorder.ImageInputSettings = new GameViewInputSettings
+        {
+            OutputWidth = 1920,
+            OutputHeight = 1080
+        };
+
+        // Add it to the controller settings
+        controllerSettings.AddRecorderSettings(movieRecorder);
+        controllerSettings.SetRecordModeToManual();
+        controllerSettings.FrameRate = 30.0f;
+    }
+
+    private void StartVideoRecorder() {
+        // 2. Start recording
+        recorderController.PrepareRecording();
+        recorderController.StartRecording();
+        take += 1;
+    }
+    
+    private void StopVideoRecorder() {
+        recorderController.StopRecording();
     }
 
     // Launch TCP to receive message from python
@@ -89,6 +134,8 @@ public class HiyoriController : MonoBehaviour, ISaveable
                 using(client = listener.AcceptTcpClient()) {
                     using (NetworkStream stream = client.GetStream()) {
                         int length;
+                        requestStartRecording = true;
+                        requestStopRecording = false;
                         while ((length = stream.Read(bytes, 0, bytes.Length)) != 0) {
                             var incommingData = new byte[length];
                             Array.Copy(bytes, 0, incommingData, 0, length);
@@ -106,7 +153,14 @@ public class HiyoriController : MonoBehaviour, ISaveable
                             y_ratio_right = float.Parse(res[8]);
                             mar = float.Parse(res[9]);
                             mouth_dist = float.Parse(res[10]);
+                            ahoge = float.Parse(res[11]);
+                            front = float.Parse(res[12]);
+                            side = float.Parse(res[13]);
+                            back = float.Parse(res[14]);
+                            sideup = float.Parse(res[15]);
                         }
+                        requestStartRecording = false;
+                        requestStopRecording = true;
                     }
                 }
             }
@@ -118,15 +172,22 @@ public class HiyoriController : MonoBehaviour, ISaveable
     // Update is called once per frame
     void Update()
     {
+                if (requestStartRecording)
+        {
+            requestStartRecording = false;
+            StartVideoRecorder();
+            Debug.Log("[Hiyori] Recording request ignored outside Editor.");
+        }
+
+        if (requestStopRecording)
+        {
+            requestStopRecording = false;
+            StopVideoRecorder();
+        }
         print(string.Format("Roll: {0:F}; Pitch: {1:F}; Yaw: {2:F}", roll, pitch, yaw));
 
         // control the blush of the avatar
-        if (Input.GetKeyDown(KeyCode.Alpha1)) {
-            if (blush == false)
-                blush = true;
-            else
-                blush = false;
-        }
+        if (Keyboard.current != null && Keyboard.current.digit1Key.wasPressedThisFrame) blush = !blush;
     }
 
     // Apply all changes of control variables here~
@@ -146,12 +207,6 @@ public class HiyoriController : MonoBehaviour, ISaveable
         parameter = model.Parameters[2];
         parameter.Value = -Mathf.Clamp(roll, -30, 30);
 
-        // breath
-        t1 += Time.deltaTime;
-        float value = (Mathf.Sin(t1 * 3f) + 1) * 0.5f;
-        parameter = model.Parameters[23];
-        parameter.Value = value;
-
         if (blush) {
             parameter = model.Parameters[3];
             parameter.Value = 1;
@@ -169,7 +224,8 @@ public class HiyoriController : MonoBehaviour, ISaveable
 
         if (change_mouth_form)
             MouthForm();
-
+            
+        HairMovement();
     }
 
     // whole body movement (body X/Z)
@@ -184,13 +240,20 @@ public class HiyoriController : MonoBehaviour, ISaveable
             parameter.Value = 0;
         }
 
+        parameter = model.Parameters[21];
+        if (Mathf.Abs(pitch) > abs_body_pitch_threshold) {
+            parameter.Value = -(10 - 0) / (abs_body_roll_yaw_max - abs_body_pitch_threshold) * ((Mathf.Abs(pitch) - abs_body_pitch_threshold) * Mathf.Sign(pitch));
+        }
+        else {
+            parameter.Value = 0;
+        }
+
         // yaw
         parameter = model.Parameters[20];
         if (Mathf.Abs(yaw) > abs_body_yaw_threshold) {
             parameter.Value = -(10 - 0) / (abs_body_roll_yaw_max - abs_body_yaw_threshold) * ((Mathf.Abs(yaw) - abs_body_yaw_threshold) * Mathf.Sign(yaw));
         }
         else {
-            parameter = model.Parameters[20];
             parameter.Value = 0;
         }
     }
@@ -236,7 +299,7 @@ public class HiyoriController : MonoBehaviour, ISaveable
         // mouth aspect ratio -> mouth opening
         float mar_clamped = Mathf.Clamp(mar, mar_min_threshold, mar_max_threshold);
         mar_clamped = (mar_clamped - mar_min_threshold) / (mar_max_threshold - mar_min_threshold) * 1;
-        var parameter = model.Parameters[19];
+        var parameter = model.Parameters[13];
         parameter.Value = mar_clamped;
     }
 
@@ -245,9 +308,22 @@ public class HiyoriController : MonoBehaviour, ISaveable
         float mouth_dist_clamped = Mathf.Clamp(mouth_dist, mouth_dist_min, mouth_dist_max);
         // range is [-1, 1]
         mouth_dist_clamped = (mouth_dist_clamped - mouth_dist_min) / (mouth_dist_max - mouth_dist_min) * 2 - 1;
-        var parameter = model.Parameters[18];
+        var parameter = model.Parameters[12];
         parameter.Value = mouth_dist_clamped;
 
+    }
+
+    void HairMovement() {
+        var parameter = model.Parameters[22];
+        parameter.Value = ahoge;
+        parameter = model.Parameters[23];
+        parameter.Value = front;
+        parameter = model.Parameters[24];
+        parameter.Value = side;
+        parameter = model.Parameters[25];
+        parameter.Value = back;
+        parameter = model.Parameters[26];
+        parameter.Value = sideup;
     }
 
     void OnApplicationQuit()
@@ -286,3 +362,4 @@ public class HiyoriController : MonoBehaviour, ISaveable
         mouth_dist_min = hiyoriPref.mouth_dist_min;
     }
 }
+
